@@ -1,0 +1,11 @@
+ df -h
+文件系统        大小  已用  可用 已用% 挂载点
+tmpfs           388M  2.1M  386M    1% /run
+/dev/sda3        29G   24G  3.8G   87% /
+tmpfs           1.9G     0  1.9G    0% /dev/shm
+tmpfs           5.0M  4.0K  5.0M    1% /run/lock
+tmpfs           1.9G     0  1.9G    0% /run/qemu
+/dev/sda2       512M  6.1M  506M    2% /boot/efi
+tmpfs           388M  112K  388M    1% /run/user/1000
+
+
