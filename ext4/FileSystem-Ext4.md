@@ -158,7 +158,7 @@ Ext4 使用一阶段提交 + 日志校验来保证正确性，性能提升大约
 
 ### 概述(Overview)
 
-![](/res/fs-layout.jpg)
+<img src="res/fs-layout.jpg" />
 
 - MBR 为主引导记录用来引导计算机。在计算机启动时，BIOS 读入并执行 MBR，MBR 作的第一件事就是确定活动分区(这对应于双系统的计算机开机时选择启动项，单系统的直接就能确定了所以就不需要选择)，读入活动分区的引导块(Boot block)，引导块再加载该分区中的操作系统。
 - 分区表(Partition table)用来记录每个分区的起始和结束地址，表中的一个分区为活动分区。
@@ -182,7 +182,7 @@ Ext4 使用一阶段提交 + 日志校验来保证正确性，性能提升大约
 
 #### 布局(layout)
 
-![](../res/fs-ext4-layout.png)
+<img src="res/fs-ext4-layout.png" />
 
 为了允许安装启动扇区和其他用途，块组 0 的开头 1024 bytes 未被使用。超级块从 第 1024 bytes 开始，通常在第 0 块，但如果块大小是 1Kb，则从第 1 块开始。
 
@@ -210,7 +210,7 @@ Ext4 提供了 3 个块组描述符标识来启用该特性。
 
 #### 特殊的节点(Special inodes)
 
-![](/res/fs-si.png)
+<img src="res/fs-si.png" />
 
 #### 块和节点分配策略(Block and Inode Allocation Policy)
 
@@ -232,7 +232,7 @@ Ext4 提供了 3 个块组描述符标识来启用该特性。
 
 ### 块组描述符(Block Group Descriptors)
 
-![](/res/fs-bgd.png)
+<img src="res/fs-bgd.png" />
 
 在一个块组中，拥有固定位置的数据结构只有超级块和块组描述符。
 
@@ -277,7 +277,7 @@ inode 节点中记录了四个时间戳，分别是 inode 修改时间(inode cha
 
 ### `inode.i_block` 内容（The Contents of inode.i_block）
 
-![](/res/fs-inode.png)
+<img src="res/fs-inode.png" />
 
 在 inode 节点中 i_block[EXT4_N_BLOCKS=15] 域 一共 60 bytes,通常情况下用来记录文件块的索引信息。
 
@@ -305,11 +305,11 @@ inode 节点中记录了四个时间戳，分别是 inode 修改时间(inode cha
 
 默认情况下，每一个目录将所包含的条目保存到几乎线性的数组中。因为目录条目不能跨越文件系统块，所以在每一块的最后可能都会有剩余的字节，所以它并不是一个严格的数组。准确的来说，一个目录是一系列的数据块，每一个数据块包含了一个保存目录条目的线性数组。
 
-![](/res/fs-lde.png)
+<img src="res/fs-lde.png" />
 
 每个目录条目包含一个 32-bits 的 inode 节点号，一个 16-bits 的目录条目长度，一个 16-bits 的文件名长度，一个 `EXT4_NAME_LEN` 长度文件名 `char` 数组。
 
-![](/res/fs-lde1.png)
+<img src="res/fs-lde1.png" />
 
 因为文件名不能超过 255 bytes， 所以新的目录条目将 16-bits 的文件名长度缩减为 8-bits， 剩余的 8-bits 用来保存目录条目对应文件的文件类型。
 
