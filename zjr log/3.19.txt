@@ -1,0 +1,4 @@
+完成ext4文件系统架构学习
+完成fat, ext4文件系统模块加载和makefile编写，并挂载成功
+学习linux驱动前三个部分
+学习linux内核设计和实现到dentry部分
