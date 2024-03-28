@@ -1,0 +1,8 @@
+https://www.laumy.tech/767.html
+https://blog.csdn.net/oqqYuJi12345678/article/details/101831535 d_make_root函数
+https://zhuanlan.zhihu.com/p/478988259 linux写文件完整流程
+https://zhuanlan.zhihu.com/p/476181560 linux读文件完整流程
+https://blog.csdn.net/jakelylll/article/details/123210796 mount_bdev函数 挂载需要硬盘的文件系统
+https://zhuanlan.zhihu.com/p/606596107 挂载mount流程
+https://ty-chen.github.io/linux-kernel-vfs/ 读写，挂载与缓冲
+

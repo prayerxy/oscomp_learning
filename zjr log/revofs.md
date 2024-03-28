@@ -86,5 +86,127 @@ struct file {
 	errseq_t		f_wb_err;
 	errseq_t		f_sb_err; /* for syncfs */
 }
+
+
+
+
+
+// 由root_inode生成根目录dentry /
+struct dentry *d_make_root(struct inode *root_inode)
+{
+	struct dentry *res = NULL;
+ 
+	if (root_inode) {
+		static const struct qstr name = QSTR_INIT("/", 1);//该dentry的名字为‘/’，是该文件系统的root dentry
+ 
+		res = __d_alloc(root_inode->i_sb, &name);//分配并初始化dentry
+		if (res)
+			d_instantiate(res, root_inode);
+		else
+			iput(root_inode);
+	}
+	return res;
+}
+
+// fs/super.c
+// mount_bdev 挂载需要硬盘的文件系统
+struct dentry *mount_bdev(struct file_system_type *fs_type,
+	int flags, const char *dev_name, void *data,
+	int (*fill_super)(struct super_block *, void *, int))
+{
+	struct block_device *bdev;
+	struct super_block *s;
+    // 初始模式为读，执行
+	fmode_t mode = FMODE_READ | FMODE_EXCL;
+	int error = 0;
+	// 不是只读加入写标志
+	if (!(flags & SB_RDONLY))
+		mode |= FMODE_WRITE;
+	//获取块设备
+	bdev = blkdev_get_by_path(dev_name, mode, fs_type);
+	if (IS_ERR(bdev))
+		return ERR_CAST(bdev);
+
+	/*
+	 * once the super is inserted into the list by sget, s_umount
+	 * will protect the lockfs code from trying to start a snapshot
+	 * while we are mounting
+	 */
+	mutex_lock(&bdev->bd_fsfreeze_mutex);
+	if (bdev->bd_fsfreeze_count > 0) {
+		mutex_unlock(&bdev->bd_fsfreeze_mutex);
+		error = -EBUSY;
+		goto error_bdev;
+	}
+    // 获取创建超级块
+	s = sget(fs_type, test_bdev_super, set_bdev_super, flags | SB_NOSEC,
+		 bdev);
+	mutex_unlock(&bdev->bd_fsfreeze_mutex);
+	if (IS_ERR(s))
+		goto error_s;
+
+	if (s->s_root) {
+		if ((flags ^ s->s_flags) & SB_RDONLY) {
+			deactivate_locked_super(s);
+			error = -EBUSY;
+			goto error_bdev;
+		}
+
+		/*
+		 * s_umount nests inside open_mutex during
+		 * __invalidate_device().  blkdev_put() acquires
+		 * open_mutex and can't be called under s_umount.  Drop
+		 * s_umount temporarily.  This is safe as we're
+		 * holding an active reference.
+		 */
+		up_write(&s->s_umount);
+		blkdev_put(bdev, mode);
+		down_write(&s->s_umount);
+	} else {
+		s->s_mode = mode;
+		snprintf(s->s_id, sizeof(s->s_id), "%pg", bdev);
+		sb_set_blocksize(s, block_size(bdev));
+		error = fill_super(s, data, flags & SB_SILENT ? 1 : 0);
+		if (error) {
+			deactivate_locked_super(s);
+			goto error;
+		}
+
+		s->s_flags |= SB_ACTIVE;
+		bdev->bd_super = s;
+	}
+
+	return dget(s->s_root);
+
+error_s:
+	error = PTR_ERR(s);
+error_bdev:
+	blkdev_put(bdev, mode);
+error:
+	return ERR_PTR(error);
+}
+EXPORT_SYMBOL(mount_bdev);
+
+// kill_sb用于卸载文件系统
+static struct file_system_type revofs_file_system_type = {
+    .owner = THIS_MODULE,
+    .name = "revofs",
+    .mount = revofs_mount,
+    .kill_sb = revofs_kill_sb,
+    .fs_flags = FS_REQUIRES_DEV,
+    .next = NULL,
+};
+
+void kill_block_super(struct super_block *sb)
+{
+	struct block_device *bdev = sb->s_bdev;
+	fmode_t mode = sb->s_mode;
+
+	bdev->bd_super = NULL;
+	generic_shutdown_super(sb);
+	sync_blockdev(bdev); //同步将内存中的脏数据全部刷新到设备
+	WARN_ON_ONCE(!(mode & FMODE_EXCL));
+	blkdev_put(bdev, mode | FMODE_EXCL);
+}
 ```
 
