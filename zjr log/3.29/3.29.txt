@@ -1,0 +1,3 @@
+弄懂read，open，write等等全过程以及各种函数对应的调用地方
+mount弄懂系统调用的使用结构体等最后的root inode以及super block生成
+补充笔记记录在revofs.md中

@@ -5,4 +5,5 @@ https://zhuanlan.zhihu.com/p/476181560 linux读文件完整流程
 https://blog.csdn.net/jakelylll/article/details/123210796 mount_bdev函数 挂载需要硬盘的文件系统
 https://zhuanlan.zhihu.com/p/606596107 挂载mount流程
 https://ty-chen.github.io/linux-kernel-vfs/ 读写，挂载与缓冲
+https://zhuanlan.zhihu.com/p/471175983 open流程
 
