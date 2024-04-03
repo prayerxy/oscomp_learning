@@ -308,8 +308,8 @@ out_type:
 ```c
 // include/linux/path.c
 struct path {
-	struct vfsmount *mnt;
-	struct dentry *dentry; //挂载点dentry实例
+	struct vfsmount *mnt;	
+	struct dentry *dentry; //挂载点目录dentry实例
 } __randomize_layout;
 
 long do_mount(const char *dev_name, const char __user *dir_name,
@@ -395,7 +395,7 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
 
 
 
-现在比较vfsmount和fs_context的结构：
+现在比较**vfsmount**和**fs_context**的结构：
 
 ```c
 struct fs_context {
@@ -440,7 +440,7 @@ struct mountpoint {
 };
 ```
 
-每个挂载的文件系统都会创建**mount**结构来表示挂载的信息，在**vfs_create_mount**函数中，会创建mount结构，然后依据fs_context来对mount结构信息进行填充并且对vfsmnt结构进行初始化和填充。这样最后其实mount结构体便和文件系统建立了联系。
+
 
 
 
@@ -463,7 +463,7 @@ struct mountpoint {
 
    
 
-3. 调用`vfs_get_tree`，这里面会调用**fc->ops->get_tree**。如果按照上述调用，那么会调用**legacy_get_tree**函数，里面会调用我们自己写的mount函数，在我们自己写的mount函数中
+3. 调用`vfs_get_tree`，这里面会调用**fc->ops->get_tree**。如果按照上述调用，那么会调用**legacy_get_tree**函数，里面会调用我们自己写的mount函数。在我们自己写的mount函数中我们执行了填充超级块，初始化根目录inode的操作等
 
    ```c
    static int legacy_get_tree(struct fs_context *fc)
@@ -471,7 +471,7 @@ struct mountpoint {
    	struct legacy_fs_context *ctx = fc->fs_private;
    	struct super_block *sb;
    	struct dentry *root;
-   
+   	// dentry
    	root = fc->fs_type->mount(fc->fs_type, fc->sb_flags,
    				      fc->source, ctx->legacy_data);
    	if (IS_ERR(root))
@@ -487,5 +487,442 @@ struct mountpoint {
 
    
 
-4. 
+4. `vfs_get_tree`函数执行完后会执行`do_new_mount_fc`函数。如下：
+
+   ```c
+   static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
+   			   unsigned int mnt_flags)
+   {
+   	struct vfsmount *mnt;
+   	struct mountpoint *mp;
+   	struct super_block *sb = fc->root->d_sb;
+   	...
+   
+   	mnt = vfs_create_mount(fc);
+   	...
+   	error = do_add_mount(real_mount(mnt), mp, mountpoint, mnt_flags);
+   	...
+   	return error;
+   }
+   ```
+
+   每个挂载的文件系统都会创建**mount**结构来表示挂载的信息，在**vfs_create_mount**函数中，会创建mount结构，然后依据fs_context来对mount结构信息进行填充并且对vfsmnt结构进行初始化和填充。这样最后其实mount结构体便和文件系统建立了联系。do_add_mount进一步创建新的挂载实例关联到系统。
+
+
+
+#### 读 read
+
+当要读文件时，发生read系统调用，其实最后关联如下：
+
+```c
+// fs/read_write.c
+// linux/file.h fd
+struct fd {
+	struct file *file;
+	unsigned int flags;
+};
+
+ssize_t ksys_read(unsigned int fd, char __user *buf, size_t count)
+{
+	struct fd f = fdget_pos(fd);
+	ssize_t ret = -EBADF;
+
+	if (f.file) {
+		loff_t pos, *ppos = file_ppos(f.file);
+		if (ppos) {
+			pos = *ppos;
+			ppos = &pos;
+		}
+		ret = vfs_read(f.file, buf, count, ppos);
+		if (ret >= 0 && ppos)
+			f.file->f_pos = pos;
+		fdput_pos(f);
+	}
+	return ret;
+}
+
+SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+{
+	return ksys_read(fd, buf, count);
+}
+```
+
+其实执行上述系统调用，最后转到ksys_read中，在这个里面会获取文件偏移指针，然后调用vfs_read函数。最后更新文件偏移指针。
+
+
+
+vfs_read函数如下：
+
+```c
+ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
+{
+	...
+
+	if (file->f_op->read)
+		ret = file->f_op->read(file, buf, count, pos);
+	else if (file->f_op->read_iter)
+		ret = new_sync_read(file, buf, count, pos);
+	else
+		ret = -EINVAL;
+	...
+	return ret;
+}
+```
+
+如果我们定义的file_operation中有read函数，那么会优先调用read函数。否则如果read_iter函数存在，则会调用new_sync_read函数。现在一般使用page cache的都会转向调用new_sync_read函数。
+
+
+
+new_sync_read函数如下：
+
+```c
+static ssize_t new_sync_read(struct file *filp, char __user *buf, size_t len, loff_t *ppos)
+{
+    // 用于初始化一段内存区域
+	struct iovec iov = { .iov_base = buf, .iov_len = len };
+    // kernel 每一次读写都会对应一个kiocb
+	struct kiocb kiocb;
+    // iter 用于数据在内核空间和用户空间之间的迭代
+	struct iov_iter iter;
+	ssize_t ret;
+
+	init_sync_kiocb(&kiocb, filp);
+	kiocb.ki_pos = (ppos ? *ppos : 0);
+	iov_iter_init(&iter, READ, &iov, 1, len);
+    
+	ret = call_read_iter(filp, &kiocb, &iter);
+	BUG_ON(ret == -EIOCBQUEUED);
+	if (ppos)
+		*ppos = kiocb.ki_pos;
+	return ret;
+}
+```
+
+上述重点是调用`call_read_iter`函数，他会转向调用我们自己编写的`file_operations`中的`read_iter`函数。如果我们设置的这个为`generic_file_read_iter`函数，最后会转向filemap_read函数。
+
+
+
+filemap_read函数作业便是从page cache获取与文件相关的连续页，然后便可以以页的形式读入数据。
+
+```c
+// mm/filemap.c
+ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
+		ssize_t already_read)
+{
+	...
+}
+```
+
+
+
+当我们从page cache中获取文件数据的时候，会有预读的过程。也就是我们会先把磁盘中文件的数据读入到page cache中组装成页，这个时候需要调用address_space_operations函数中的**readpage**函数。
+
+
+
+本次revofs里面的readpage函数如下：
+
+```c
+// 从文件中读取一个或多个页的内容到page中
+static int revofs_readpage(struct file *file, struct page *page)
+{
+    return mpage_readpage(page, revofs_file_get_block);
+}
+// mpage_readpage的核心最后是调用do_mpage_readpage函数
+```
+
+**do_mpage_readpage**的整体逻辑就是， 尽量通过bio的方式去读取连续的sector， 如果不行， 就转而通过buffer_head的方式一个sector一个sector去读。其实也就是bio是用于磁盘连续磁盘块的读取，效率高；但是如果不连续的话只有用bufferhead一个个磁盘块的读。
+
+
+
+#### 写 write
+
+当发起write系统调用后，其实是转进了ksys_write函数。
+
+```c
+SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf,
+		size_t, count)
+{
+	return ksys_write(fd, buf, count);
+}
+
+ssize_t ksys_write(unsigned int fd, const char __user *buf, size_t count)
+{
+	struct fd f = fdget_pos(fd);
+	ssize_t ret = -EBADF;
+	// 定位文件偏移指针
+	if (f.file) {
+		loff_t pos, *ppos = file_ppos(f.file);
+		if (ppos) {
+			pos = *ppos;
+			ppos = &pos;
+		}
+        // 调用vfs层的写函数
+		ret = vfs_write(f.file, buf, count, ppos);
+		if (ret >= 0 && ppos)
+			f.file->f_pos = pos;
+		fdput_pos(f);
+	}
+
+	return ret;
+}
+```
+
+
+
+`vfs_write`层写函数如下：
+
+```c
+ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_t *pos)
+{
+	...
+    // write 以及write_iter函数的选择
+	if (file->f_op->write)
+		ret = file->f_op->write(file, buf, count, pos);
+	else if (file->f_op->write_iter)
+		ret = new_sync_write(file, buf, count, pos);
+	else
+		ret = -EINVAL;
+	...
+	return ret;
+}
+```
+
+和read一样，在这里会优先选择`file_operations`中的write函数来写，如果没有write函数，则会选用`write_iter`函数。
+
+
+
+```c
+// new_sync_write
+static ssize_t new_sync_write(struct file *filp, const char __user *buf, size_t len, loff_t *ppos)
+{
+    ...
+	ret = call_write_iter(filp, &kiocb, &iter);
+	BUG_ON(ret == -EIOCBQUEUED);
+	if (ret > 0 && ppos)
+		*ppos = kiocb.ki_pos;
+	...
+}
+
+// call_write_iter
+static inline ssize_t call_write_iter(struct file *file, struct kiocb *kio,
+				      struct iov_iter *iter)
+{
+	return file->f_op->write_iter(kio, iter);
+}
+```
+
+本次revofs里面用的是**generic_file_write_iter**，这个又是与**page cache**相关的写函数：
+
+```c
+ssize_t generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
+{
+	struct file *file = iocb->ki_filp;
+	struct inode *inode = file->f_mapping->host;
+	ssize_t ret;
+
+	inode_lock(inode);
+	ret = generic_write_checks(iocb, from);
+    // 写内容到page cache
+	if (ret > 0)
+		ret = __generic_file_write_iter(iocb, from);
+	inode_unlock(inode);
+
+	if (ret > 0)
+		ret = generic_write_sync(iocb, ret);  //最终调用f_op->fsync
+	return ret;
+}
+```
+
+
+
+__generic_file_write_iter函数中又会调用generic_perform_write函数来执行真正的写操作，即把数据写到page cache的页面里面。
+
+```c
+ssize_t generic_perform_write(struct file *file,
+				struct iov_iter *i, loff_t pos)
+{
+	struct address_space *mapping = file->f_mapping;
+	const struct address_space_operations *a_ops = mapping->a_ops;
+	long status = 0;
+    // 记录已经写入的字节数
+	ssize_t written = 0;
+	unsigned int flags = 0;
+
+	do {
+        // 页缓存中的页面
+		struct page *page;
+        // 页内偏移量
+		unsigned long offset;	/* Offset into pagecache page */
+        // 要写入页面的字节数
+		unsigned long bytes;	/* Bytes to write to page */
+        // 从用户空间复制到页面的字节数
+		size_t copied;		/* Bytes copied from user */
+		void *fsdata = NULL;
+
+		offset = (pos & (PAGE_SIZE - 1));
+		bytes = min_t(unsigned long, PAGE_SIZE - offset,
+						iov_iter_count(i));
+
+again:
+		if (unlikely(fault_in_iov_iter_readable(i, bytes))) {
+			status = -EFAULT;
+			break;
+		}
+
+		if (fatal_signal_pending(current)) {
+			status = -EINTR;
+			break;
+		}
+		// 准备页面进行写操作
+		status = a_ops->write_begin(file, mapping, pos, bytes, flags,
+						&page, &fsdata);
+		if (unlikely(status < 0))
+			break;
+
+		if (mapping_writably_mapped(mapping))
+			flush_dcache_page(page);
+
+		copied = copy_page_from_iter_atomic(page, offset, bytes, i);
+		flush_dcache_page(page);
+		// 进行善后操作
+		status = a_ops->write_end(file, mapping, pos, bytes, copied,
+						page, fsdata);
+		if (unlikely(status != copied)) {
+			iov_iter_revert(i, copied - max(status, 0L));
+			if (unlikely(status < 0))
+				break;
+		}
+		cond_resched();
+
+		if (unlikely(status == 0)) {
+			/*
+			 * A short copy made ->write_end() reject the
+			 * thing entirely.  Might be memory poisoning
+			 * halfway through, might be a race with munmap,
+			 * might be severe memory pressure.
+			 */
+			if (copied)
+				bytes = copied;
+			goto again;
+		}
+		pos += status;
+		written += status;
+		// 脏页适当地写回磁盘
+		balance_dirty_pages_ratelimited(mapping);
+	} while (iov_iter_count(i));
+
+	return written ? written : status;
+}
+```
+
+在这个函数中调用了`write_begin`和`write_end`函数。
+
+
+
+### operations
+
+#### super_operations
+
+revofs中实现如下：
+
+```c
+static struct super_operations revofs_super_ops = {
+    .put_super = revofs_put_super,
+    .alloc_inode = revofs_alloc_inode,
+    .destroy_inode = revofs_destroy_inode,
+    .write_inode = revofs_write_inode,
+    .sync_fs = revofs_sync_fs,
+    .statfs = revofs_statfs,
+};
+```
+
+其中put_super，alloc_inode，destroy_inode均是内存层面进行的操作。
+
+1. put_super。在卸载文件系统时会调用，卸载文件系统时会调用file_system_type中的函数kill_sb，在这里面会释放内存中的super block结构；
+2. alloc_inode。在内存中分配一个inode结构
+3. destroy_inode。在内存中释放一个inode结构
+4. write_inode。将内存中的inode回写磁盘
+5. sync_fs。回写超级块，bitmap等结构到磁盘
+6. statfs。提取文件系统信息到stat结构。
+
+
+
+#### inode_operations
+
+```c
+static const struct inode_operations revofs_inode_ops = {
+    .lookup = revofs_lookup,
+    .create = revofs_create,  // 创建文件时使用
+    .unlink = revofs_unlink,
+    .mkdir = revofs_mkdir,
+    .rmdir = revofs_rmdir,
+    .rename = revofs_rename,
+    .link = revofs_link,
+    .symlink = revofs_symlink,
+};
+```
+
+1. lookup。这个是打开文件open时用到的，会依据目录项在指定目录下搜索得到目录项所指的inode。并将其与dentry相关联；
+2. create。这个也在打开文件open时用到过。如果lookup失败，则会依据是否创建来创建相关的inode和目录项，彼此相关联；
+3. unlink。文件无链接后，用这个方式删除文件；
+4. rename。这个主要是用于文件的移植操作，inode关联；
+5. mkdir。mkdir创建目录时会调用；
+6. rmdir。删除目录；
+7. link。创建硬连接；
+8. symlink。符号连接i_link字段赋值。
+
+
+
+#### file_operations
+
+```c
+const struct file_operations revofs_dir_ops = {
+    .owner = THIS_MODULE,
+    // ll ls命令会用到
+    .iterate_shared = revofs_iterate,
+};
+
+const struct file_operations revofs_file_ops = {
+    .llseek = generic_file_llseek, //文件中偏移量定位
+    .owner = THIS_MODULE,
+    .read_iter = generic_file_read_iter, //page cache读调用  
+    .write_iter = generic_file_write_iter, // page cache写调用
+    .fsync = generic_file_fsync,  //同步文件缓冲数据
+};
+
+// 文件系统与页缓存映射 执行函数
+const struct address_space_operations revofs_aops = {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
+    .readahead = revofs_readahead,
+#else
+     
+    .readpage = revofs_readpage, // disk读取页到page cache
+#endif
+    .writepage = revofs_writepage, // page cache写页到disk
+    .write_begin = revofs_write_begin, // 写前准备，包括一部分预读
+    .write_end = revofs_write_end, //写后的善后工作
+};
+
+```
+
+
+
+#### file_system_type
+
+```c
+static struct file_system_type revofs_file_system_type = {
+    .owner = THIS_MODULE,
+    .name = "revofs",
+    .mount = revofs_mount, // mount时使用
+    .kill_sb = revofs_kill_sb, // 卸载文件系统时使用
+    .fs_flags = FS_REQUIRES_DEV,
+    .next = NULL,
+};
+```
+
+
+
+## 要实现的内容
+
+
 
