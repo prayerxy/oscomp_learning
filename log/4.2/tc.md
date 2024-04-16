@@ -5,7 +5,7 @@
 ### 总的磁盘布局结构
 
 | super | inode_store | inode_bitmap | block_bitmap | blocks  data |
-| ----- | ----------- | ------------ | ------------ | ------------ |
+| ----- | ----------- | :----------- | ------------ | ------------ |
 
 ### super block 超级块
 
@@ -312,6 +312,7 @@ struct path {
 	struct dentry *dentry; //挂载点目录dentry实例
 } __randomize_layout;
 
+//挂载点的目录/mnt/test解析成path类型
 long do_mount(const char *dev_name, const char __user *dir_name,
 		const char *type_page, unsigned long flags, void *data_page)
 {
