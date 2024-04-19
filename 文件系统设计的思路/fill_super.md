@@ -790,3 +790,76 @@ static inline struct ext3_sb_info * EXT3_SB(struct super_block *sb)
 
 上述重点发现是ext3与ext4中**一个块组描述符占一个磁盘块大小**，具体的逻辑可以见`block = descriptor_loc(sb, logic_sb_block, i);`，这个函数的作用便是依据块组描述符的逻辑索引获取到其所占的磁盘块块号，然后我们利用bufferhead读取即可。
 
+
+
+## 初次哈希树建立以及do_split函数
+
+初次哈希树建立是在make_indexed_dir函数中实现的，具体步骤如下：
+
+1. 当初始没有哈希树时，逻辑第0块磁盘块中目录项撑爆，首先把..后的所有目录项拷贝到一个新追加的块中，我们称这个新追加的块是逻辑第1块；
+
+   ```c
+   len = ((char *) root) + blocksize - (char *) de;
+   	
+   	bh2 = ext3_append (handle, dir, &block, &retval);
+   	if (!(bh2)) {
+   		brelse(bh);
+   		return retval;
+   	}
+   	EXT3_I(dir)->i_flags |= EXT3_INDEX_FL;
+   	data1 = bh2->b_data;
+   
+   	memcpy (data1, de, len);
+   	// ..后面的目录项
+   	de = (struct ext3_dir_entry_2 *) data1;
+   	top = data1 + len;
+   	while ((char *)(de2 = ext3_next_entry(de)) < top)
+   		de = de2;
+   	de->rec_len = ext3_rec_len_to_disk(data1 + blocksize - (char *) de);
+   	/* Initialize the root; the dot dirents already exist */
+   	de = (struct ext3_dir_entry_2 *) (&root->dotdot);
+   	de->rec_len = ext3_rec_len_to_disk(blocksize - EXT3_DIR_REC_LEN(2));
+   ```
+
+   其中len是除了..以外目录项所占的长度，其中bh2是新追加的块的缓冲区。最后还拷贝了..这个目录项。
+
+2. 以逻辑第0块构建dx_root，设置dx_root的info信息，然后对第0个dx_entry进行了设置，具体设置如下：
+
+   ```c
+   	memset (&root->info, 0, sizeof(root->info));
+   	root->info.info_length = sizeof(root->info);
+   	root->info.hash_version = EXT3_SB(dir->i_sb)->s_def_hash_version;
+   	entries = root->entries;
+   	// entry->block =1
+   	dx_set_block (entries, 1);
+   	// hash字段填充
+   	dx_set_count (entries, 1);
+   	dx_set_limit (entries, dx_root_limit(dir, sizeof(root->info)));
+   ```
+
+   ```c
+   static inline void dx_set_block (struct dx_entry *entry, unsigned value)
+   {
+   	entry->block = cpu_to_le32(value);
+   }
+   
+   static inline void dx_set_count (struct dx_entry *entries, unsigned value)
+   {
+   	((struct dx_countlimit *) entries)->count = cpu_to_le16(value);
+   }
+   
+   static inline void dx_set_limit (struct dx_entry *entries, unsigned value)
+   {
+   	((struct dx_countlimit *) entries)->limit = cpu_to_le16(value);
+   }
+   static inline unsigned dx_root_limit (struct inode *dir, unsigned infosize)
+   {
+   	unsigned entry_space = dir->i_sb->s_blocksize - EXT3_DIR_REC_LEN(1) -
+   		EXT3_DIR_REC_LEN(2) - infosize;
+   	return entry_space / sizeof(struct dx_entry);
+   }
+   ```
+
+   其中可以看到它把第0个dx_entry中的block字段设置为了逻辑第1块，也就是我们追加的块；
+
+3. 然后调用do_split函数，这里面的主要逻辑便是再追加一个块，为逻辑第2块。然后从这个块的末尾构建map，这个map中存储了其对应的目录项的hash值，偏移量以及大小，然后对这个map进行按照hash值的排序。确定split位置是依据块大小的一半位置处进行分裂，然后将split以下的存在逻辑第一块中的目录项全部拷贝到这个新追加的块从开头的位置处，split以下的目录项在逻辑第1块中每次一拷贝就将inode置为0，便于后面进行区分。然后对逻辑第1块中的目录项进行压缩整理，等于只保留了split以上的目录项。后面再调用  dx_insert_block函数为新追加的逻辑第2块设置一个新的dx_entry，把里面的hash值设置为split位置处目录项的hash值，块号设置为逻辑第2块。
